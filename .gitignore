@@ -1,0 +1,6 @@
+.DS_store
+.vscode/
+__pycache__/
+data/
+deep_speaker.pdf
+*.gz
