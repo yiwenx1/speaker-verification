@@ -34,10 +34,10 @@ class myDataset(Dataset):
             self.trials, self.enrol, self.test = test_load(path + "/test.preprocessed.npz")
             print("trials {}, enrol {}, test {}".format(
                 self.trials.shape, self.enrol.shape, self.test.shape))
-    
+
     def __len__(self):
         if self.mode == "train":
-            return self.features.shape[0] 
+            return self.features.shape[0]
         else: # if self.mode == "dev" or "test"
             if self.embedding_flag == "enrol":
                 return self.enrol.shape[0]
@@ -45,44 +45,44 @@ class myDataset(Dataset):
                 return self.test.shape[0]
             else: # if self.embedding_flag == "trail":
                 return self.trials.shape[0]
-    
+
     def __getitem__(self, index):
         if self.mode == "train":
             raw_inputs = np.copy(self.features[index])
             labels = self.speakers[index]
-            inputs = trim_utterances(raw_inputs, self.nframes) 
+            inputs = trim_utterances(raw_inputs, self.nframes)
             inputs = inputs.reshape((1, inputs.shape[0], inputs.shape[1]))
-            if torch.cuda.is_available() is True:
-                return inputs, labels
-            else:
-                return inputs.astype(float), labels
+            # if torch.cuda.is_available() is True:
+                # return inputs, labels
+            # else:
+            return inputs.astype(float), labels
 
         else: # dev mode or test mode
             if self.embedding_flag == "enrol":
                 raw_enrol = np.copy(self.enrol[index])
                 enrol = trim_utterances(raw_enrol, self.nframes)
                 enrol = enrol.reshape((1, enrol.shape[0], enrol.shape[1]))
-                if torch.cuda.is_available() is True:
-                    return enrol
-                else:
-                    return enrol.astype(float)
-                
+                # if torch.cuda.is_available() is True:
+                    # return enrol
+                # else:
+                return enrol.astype(float)
+
             elif self.embedding_flag == "test":
                 raw_test = np.copy(self.test[index])
                 test = trim_utterances(raw_test, self.nframes)
                 test = test.reshape((1, test.shape[0], test.shape[1]))
-                if torch.cuda.is_available() is True:
-                    return test
-                else:
-                    return test.astype(float)
-            
+                # if torch.cuda.is_available() is True:
+                    # return test
+                # else:
+                return test.astype(float)
+
             else: # if self.embedding_flag == "trail"
                 enrol_idx, test_idx = self.trials[index][0], self.trials[index][1]
                 if self.mode == "dev":
                     label = self.labels[index]
                 elif self.mode == "test":
                     label = False
-                return enrol_idx, test_idx, label
+                return enrol_idx, test_idx, str(label)
 
 
 def trim_utterances(raw_inputs, nframes):
@@ -91,6 +91,8 @@ def trim_utterances(raw_inputs, nframes):
     elif len(raw_inputs) > nframes:
         start = np.random.randint(0, high=len(raw_inputs)-nframes+1)
         inputs = np.copy(raw_inputs[start:start+nframes])
+    else:
+        inputs = raw_inputs
     return inputs
 
 
@@ -116,4 +118,4 @@ if __name__ == "__main__":
         enrol_idx, test_idx, label = dev_data.__getitem__(i)
         print(enrol_idx, test_idx, label)
 
-    
+

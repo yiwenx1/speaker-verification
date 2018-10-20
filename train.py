@@ -1,5 +1,4 @@
 from myDataset import myDataset
-from tripletLoss import TripletLoss
 from utils import EER
 from model import EmbeddingNet
 
@@ -12,19 +11,21 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
 import time
-
+import numpy as np
 
 
 def train(train_loader, model, optimizer, criterion, epoch, args):
-    start = time.time() 
+    start = time.time()
     model.train()
     for step, (inputs, labels) in enumerate(train_loader):
         if args.cuda is True:
+            inputs = inputs.float()
             inputs = inputs.cuda()
+            labels = labels.type(torch.LongTensor)
             labels = labels.cuda()
-        print("read done") 
+        print("read done")
         optimizer.zero_grad()
-        outputs = model.classifier_forward(inputs)
+        outputs = model.forward(inputs)
         print("output done")
         _, predicted = torch.max(outputs.data, 1)
         print("predicted label: {}, True label: {}".format(predicted, labels))
@@ -36,12 +37,12 @@ def train(train_loader, model, optimizer, criterion, epoch, args):
         if step % args.log_interval == 0:
             end = time.time()
             print("Train Epoch {}, Step {}, ({}%) in {}\nLoss: {}".format(
-                epoch, step, 
+                epoch, step,
                 100 * step * len(inputs) / train_loader.dataset.__len__(),
                 end-start, loss.item()))
-        
+
         if step % args.checkpoint == 0:
-            save_model(epoch, model, optimizer, loss, step, "./weights")
+            save_model(epoch, model, optimizer, loss, step, "./weights/")
 
 def save_model(epoch, model, optimizer, loss, step, save_path):
     filename = save_path + str(epoch) + '-' + str(step) + '-' + "%.6f" % loss.item() + '.pth'
@@ -67,23 +68,22 @@ def load_model(epoch, step, loss, model, optimizer, save_path):
         print('########## loading weights done ##########')
         return model, optimizer, start_epoch, loss
     else:
-        print("no such file: ", filename)    
+        print("no such file: ", filename)
 
 
 def embed_utterances(dev_loader, model, flag):
-    dev_loader.embedding_flag = flag
     embeddings_array = []
     with torch.no_grad():
         for step, inputs in enumerate(dev_loader):
-            if args.cuda is True:
-                inputs = inputs.cuda()
-            embeddings = model(inputs)
+            inputs = inputs.float().cuda()
+            embeddings = model.embedding_forward(inputs)
+            print("embeddings: ", embeddings, embeddings.shape)
             embeddings_array.append(embeddings[0])
-            print("Embed {} utterances".format(step / dev_loader.__len__()))
+            print("Embed {} {} utterances".format(step / dev_loader.__len__(), flag))
             print(len(embeddings_array))
     return embeddings_array
 
-def dev(dev_loader, model, epoch):
+def dev(dev_loader,  model, epoch):
     start = time.time()
     model.eval()
     # Embed all the utterances in the enrollment array
@@ -92,38 +92,70 @@ def dev(dev_loader, model, epoch):
     print("########## Embed Enrol Done ##########")
     print("########## Start Embedding Test ##########")
     # Embed all the utterances in the test array
+    dev_loader.dataset.embedding_flag = "test"
     tests_array = embed_utterances(dev_loader, model, "test")
     print("########## Embed Test Done ##########")
+    dev_loader.dataset.embedding_flag = "trail"
     # start testing
-    dev_loader.embedding_flag = "trail"
+    scores = []
+    true_labels = []
     with torch.no_grad():
         for step, (enrol_idx, test_idx, label) in enumerate(dev_loader):
-            scores = []
-            true_labels = []
+            label = bool(label[0])
+            print(label, type(label))
             if args.cuda is True:
                 enrol_idx = enrol_idx.cuda()
                 test_idx = test_idx.cuda()
-                label = label.cuda()
-            
-            enrol_embedding = model(enrols_array[enrol_idx])
-            test_embedding = model(tests_array[test_idx])
-            cos = nn.CosineSimilarity(dim=1)
+                # label = label.cuda()
+
+            enrol_embedding = enrols_array[enrol_idx]
+            test_embedding = tests_array[test_idx]
+            cos = nn.CosineSimilarity(dim=0)
             similarity_score = cos(enrol_embedding, test_embedding)
-            scores.append(similarity_score)
+            print("True label {}, Similarity score {}".format(label, similarity_score.item()))
+            scores.append(similarity_score.item())
             true_labels.append(label)
-            print("True label {}, Similarity score {}".format(label, similarity_score))
             if step % args.log_interval == 0:
                 end = time.time()
                 print("Epoch {}, Step {}, ({}%) in {}".format(
-                    epoch, step, 
+                    epoch, step,
                     100 * step / dev_loader.dataset.__len__(),
                     end-start))
         eer, threshold = EER(true_labels, scores)
         print("EER {}, threshole {}".format(eer, threshold))
-    
-def test(test_loader, model):
-    pass
 
+def test(test_loader, model):
+    model.eval()
+    # Embed all the utterances in the enrollment array
+    print("########## Start Embedding Enrol ##########")
+    enrols_array = embed_utterances(test_loader, model, "enrol")
+    print("########## Embed Enrol Done ##########")
+    print("########## Start Embedding Test ##########")
+    # Embed all the utterances in the test array
+    test_loader.dataset.embedding_flag = "test"
+    tests_array = embed_utterances(test_loader, model, "test")
+    print("########## Embed Test Done ##########")
+    test_loader.dataset.embedding_flag = "trail"
+    # start testing
+    scores = []
+    with torch.no_grad():
+        for step, (enrol_idx, test_idx, label) in enumerate(test_loader):
+            label = bool(label[0])
+            if args.cuda is True:
+                enrol_idx = enrol_idx.cuda()
+                test_idx = test_idx.cuda()
+
+            enrol_embedding = enrols_array[enrol_idx]
+            test_embedding = tests_array[test_idx]
+            cos = nn.CosineSimilarity(dim=0)
+            similarity_score = cos(enrol_embedding, test_embedding)
+            print("Similarity score {}".format(similarity_score.item()))
+            scores.append(similarity_score.item())
+    return scores
+
+def write_scores(scores, pathname):
+    scores = np.array(scores)
+    np.save(pathname, scores)
 
 def main(args):
     args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -136,43 +168,57 @@ def main(args):
     torch.manual_seed(args.seed)
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
-    
-    train_data = myDataset("./data", [1], args.nframes, "train", None)
+
+    train_data = myDataset("./data", [1,2,3,4,5,6], args.nframes, "train", None)
     train_loader = Data.DataLoader(dataset=train_data, batch_size=args.batch_size, shuffle=True, **kwargs)
 
-    dev_data = myDataset("./data", None, args.nframes, "dev", "enrol")
-    dev_loader = Data.DataLoader(dataset=dev_data, batch_size=args.test_batch_size, shuffle=False, **kwargs)
+    # dev_data = myDataset("./data", None, args.nframes, "dev", "enrol")
+    # dev_loader = Data.DataLoader(dataset=dev_data, batch_size=args.test_batch_size, shuffle=False, **kwargs)
 
-    # test_data = myDataset("./data", None, args.nframes, "test", "enrol")
-    # test_loader = Data.DataLoader(dataset=test_data, batch_size=args.test_batch_size, shuffle=False, **kwargs)
+    test_data = myDataset("./data", None, args.nframes, "test", "enrol")
+    test_loader = Data.DataLoader(dataset=test_data, batch_size=args.test_batch_size, shuffle=False, **kwargs)
 
     embeddingNet = EmbeddingNet(embedding_size=64, num_classes=train_data.nspeakers)
-    embeddingNet = embeddingNet.double()
+    # embeddingNet = embeddingNet.double()
     if args.cuda:
+        print("##########model is in cuda mode##########")
+        gpu_ids = [0,1,2,3,4,5,6,7]
         embeddingNet.cuda()
-    
+        # embeddingNet = nn.DataParallel(embeddingNet, device_ids=[0])
+
     criterion = nn.CrossEntropyLoss()
+    # optimizer = optim.SGD(embeddingNet.parameters(), lr=args.lr, momentum=args.momentum)
     optimizer = optim.Adam(embeddingNet.parameters(), lr=args.lr, weight_decay=0.001)
     scheduler = lr_scheduler.StepLR(optimizer, 5)
     start_epoch = 0
+    if args.resume is True:
+        embeddingNet, optimizer, start_epoch, loss = load_model(
+                args.load_epoch,
+                args.load_step,
+                args.load_loss,
+                embeddingNet,
+                optimizer,
+                "./weights/"
+                )
 
-    for epoch in range(args.epochs):
-        scheduler.step()
-        train(train_loader, embeddingNet, optimizer, criterion, epoch, args)
-        dev(dev_loader, embeddingNet, epoch)
+    # for epoch in range(start_epoch, args.epochs):
+        # scheduler.step()
+        # train(train_loader, embeddingNet, optimizer, criterion, epoch, args)
+        # dev(dev_loader, embeddingNet, epoch)
 
-    test(test_loader, embeddingNet)
-    
+    scores = test(test_loader, embeddingNet)
+    write_scores(scores, "scores.npy")
+
 
 def arguments():
     parser = argparse.ArgumentParser(description="Speaker Verificiation via CNN")
-    parser.add_argument('--batch-size', type=int, default=4, metavar='BS',
+    parser.add_argument('--batch-size', type=int, default=25, metavar='BS',
                         help='input batch size for training (default: 32)')
     parser.add_argument('--test-batch-size', type=int, default=1, metavar='TBS',
                         help='input batch size for testing (default: 1)')
-    parser.add_argument('--epochs', type=int, default=2, metavar='E',
+    parser.add_argument('--epochs', type=int, default=27, metavar='E',
                         help='number of epochs to train (default: 10)')
-    parser.add_argument('--lr', type=float, default=0.01, metavar='LR',
+    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
                         help='learning rate (default: 0.01)')
     parser.add_argument('--momentum', type=float, default=0.9, metavar='M',
                         help='SGD momentum (default: 0.9)')
@@ -184,8 +230,6 @@ def arguments():
                         help='random seed (default: 1)')
     parser.add_argument('--log-interval', type=int, default=1, metavar='L',
                         help='how many batches to wait before logging training status')
-    parser.add_argument('--margin', type=float, default=0.2, metavar='M',
-                        help='margin for triplet loss (default: 0.2)')
     parser.add_argument('--checkpoint', type=int, default=50, metavar="R",
                         help='checkpoint to save model parameters')
     parser.add_argument('--resume', type=bool, default=False, metavar="R",
@@ -205,5 +249,7 @@ def arguments():
 
 if __name__ == "__main__":
     args = arguments()
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    torch.cuda.set_device(0)
     main(args)
-    
+
